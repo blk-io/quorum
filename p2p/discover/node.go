@@ -35,7 +35,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto/secp256k1"
 )
 
-const nodeIDBits = 512
+const NodeIDBits = 512
 
 // Node represents a host on the network.
 // The fields of Node may not be modified.
@@ -43,6 +43,8 @@ type Node struct {
 	IP       net.IP // len 4 for IPv4 or 16 for IPv6
 	UDP, TCP uint16 // port numbers
 	ID       NodeID // the node's public key
+
+	RaftPort uint16
 
 	// This is a cached copy of sha3(ID) which is used for node
 	// distance calculations. This is part of Node in order to make it
@@ -111,8 +113,21 @@ func (n *Node) String() string {
 		if n.UDP != n.TCP {
 			u.RawQuery = "discport=" + strconv.Itoa(int(n.UDP))
 		}
+
+		if n.HasRaftPort() {
+			raftQuery := "raftport=" + strconv.Itoa(int(n.RaftPort))
+			if len(u.RawQuery) > 0 {
+				u.RawQuery = u.RawQuery + "&" + raftQuery
+			} else {
+				u.RawQuery = raftQuery
+			}
+		}
 	}
 	return u.String()
+}
+
+func (n *Node) HasRaftPort() bool {
+	return n.RaftPort > 0
 }
 
 var incompleteNodeURL = regexp.MustCompile("(?i)^(?:enode://)?([0-9a-f]+)$")
@@ -195,7 +210,17 @@ func parseComplete(rawurl string) (*Node, error) {
 			return nil, errors.New("invalid discport in query")
 		}
 	}
-	return NewNode(id, ip, uint16(udpPort), uint16(tcpPort)), nil
+
+	node := NewNode(id, ip, uint16(udpPort), uint16(tcpPort))
+
+	if qv.Get("raftport") != "" {
+		raftPort, err := strconv.ParseUint(qv.Get("raftport"), 10, 16)
+		if err != nil {
+			return nil, errors.New("invalid raftport in query")
+		}
+		node.RaftPort = uint16(raftPort)
+	}
+	return node, nil
 }
 
 // MustParseNode parses a node URL. It panics if the URL is not valid.
@@ -207,9 +232,28 @@ func MustParseNode(rawurl string) *Node {
 	return n
 }
 
+// MarshalText implements encoding.TextMarshaler.
+func (n *Node) MarshalText() ([]byte, error) {
+	return []byte(n.String()), nil
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (n *Node) UnmarshalText(text []byte) error {
+	dec, err := ParseNode(string(text))
+	if err == nil {
+		*n = *dec
+	}
+	return err
+}
+
 // NodeID is a unique identifier for each node.
 // The node identifier is a marshaled elliptic curve public key.
-type NodeID [nodeIDBits / 8]byte
+type NodeID [NodeIDBits / 8]byte
+
+// Bytes returns a byte slice representation of the NodeID
+func (n NodeID) Bytes() []byte {
+	return n[:]
+}
 
 // NodeID prints as a long hexadecimal number.
 func (n NodeID) String() string {
@@ -221,14 +265,51 @@ func (n NodeID) GoString() string {
 	return fmt.Sprintf("discover.HexID(\"%x\")", n[:])
 }
 
+// TerminalString returns a shortened hex string for terminal logging.
+func (n NodeID) TerminalString() string {
+	return hex.EncodeToString(n[:8])
+}
+
+// MarshalText implements the encoding.TextMarshaler interface.
+func (n NodeID) MarshalText() ([]byte, error) {
+	return []byte(hex.EncodeToString(n[:])), nil
+}
+
+// UnmarshalText implements the encoding.TextUnmarshaler interface.
+func (n *NodeID) UnmarshalText(text []byte) error {
+	id, err := HexID(string(text))
+	if err != nil {
+		return err
+	}
+	*n = id
+	return nil
+}
+
+// BytesID converts a byte slice to a NodeID
+func BytesID(b []byte) (NodeID, error) {
+	var id NodeID
+	if len(b) != len(id) {
+		return id, fmt.Errorf("wrong length, want %d bytes", len(id))
+	}
+	copy(id[:], b)
+	return id, nil
+}
+
+// MustBytesID converts a byte slice to a NodeID.
+// It panics if the byte slice is not a valid NodeID.
+func MustBytesID(b []byte) NodeID {
+	id, err := BytesID(b)
+	if err != nil {
+		panic(err)
+	}
+	return id
+}
+
 // HexID converts a hex string to a NodeID.
 // The string may be prefixed with 0x.
 func HexID(in string) (NodeID, error) {
-	if strings.HasPrefix(in, "0x") {
-		in = in[2:]
-	}
 	var id NodeID
-	b, err := hex.DecodeString(in)
+	b, err := hex.DecodeString(strings.TrimPrefix(in, "0x"))
 	if err != nil {
 		return id, err
 	} else if len(b) != len(id) {
@@ -262,7 +343,7 @@ func PubkeyID(pub *ecdsa.PublicKey) NodeID {
 // Pubkey returns the public key represented by the node ID.
 // It returns an error if the ID is not a point on the curve.
 func (id NodeID) Pubkey() (*ecdsa.PublicKey, error) {
-	p := &ecdsa.PublicKey{Curve: secp256k1.S256(), X: new(big.Int), Y: new(big.Int)}
+	p := &ecdsa.PublicKey{Curve: crypto.S256(), X: new(big.Int), Y: new(big.Int)}
 	half := len(id) / 2
 	p.X.SetBytes(id[:half])
 	p.Y.SetBytes(id[half:])

@@ -3,8 +3,7 @@ package raft
 import (
 	"encoding/binary"
 
-	"github.com/ethereum/go-ethereum/logger"
-	"github.com/ethereum/go-ethereum/logger/glog"
+	"github.com/ethereum/go-ethereum/log"
 
 	"github.com/syndtr/goleveldb/leveldb"
 	"github.com/syndtr/goleveldb/leveldb/errors"
@@ -15,11 +14,6 @@ var (
 	noFsync = &opt.WriteOptions{
 		NoWriteMerge: false,
 		Sync:         false,
-	}
-
-	mustFsync = &opt.WriteOptions{
-		NoWriteMerge: false,
-		Sync:         true,
 	}
 )
 
@@ -41,35 +35,23 @@ func (pm *ProtocolManager) loadAppliedIndex() uint64 {
 	if err == errors.ErrNotFound {
 		lastAppliedIndex = 0
 	} else if err != nil {
-		glog.Fatalln(err)
+		fatalf("loadAppliedIndex error: %s", err)
 	} else {
 		lastAppliedIndex = binary.LittleEndian.Uint64(dat)
 	}
 
-	glog.V(logger.Info).Infof("Persistent applied index load: %d", lastAppliedIndex)
+	pm.mu.Lock()
 	pm.appliedIndex = lastAppliedIndex
+	pm.mu.Unlock()
+
+	log.Info("loaded the latest applied index", "lastAppliedIndex", lastAppliedIndex)
+
 	return lastAppliedIndex
 }
 
 func (pm *ProtocolManager) writeAppliedIndex(index uint64) {
-	glog.V(logger.Info).Infof("Persistent applied index write: %d", index)
+	log.Info("persisted the latest applied index", "index", index)
 	buf := make([]byte, 8)
 	binary.LittleEndian.PutUint64(buf, index)
 	pm.quorumRaftDb.Put(appliedDbKey, buf, noFsync)
-}
-
-func (pm *ProtocolManager) loadPeerUrl(nodeId uint64) string {
-	peerUrlKey := []byte(peerUrlKeyPrefix + string(nodeId))
-	value, err := pm.quorumRaftDb.Get(peerUrlKey, nil)
-	if err != nil {
-		glog.Fatalf("failed to read peer url for peer %d from leveldb: %v", nodeId, err)
-	}
-	return string(value)
-}
-
-func (pm *ProtocolManager) writePeerUrl(nodeId uint64, url string) {
-	key := []byte(peerUrlKeyPrefix + string(nodeId))
-	value := []byte(url)
-
-	pm.quorumRaftDb.Put(key, value, mustFsync)
 }
