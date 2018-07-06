@@ -1,0 +1,16 @@
+---
+os:
+  - linux
+language: go
+go:
+  - 1.6
+  - tip
+addons:
+  apt:
+    packages:
+      - libdb-dev
+install:
+  - go get -t -d -v ./...
+  - go build -v
+script:
+  - go test -v .
