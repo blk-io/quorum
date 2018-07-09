@@ -7,6 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"github.com/tv42/httpunix"
+	"github.com/blk-io/crux/server"
+	"golang.org/x/net/context"
+	"google.golang.org/grpc"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -14,6 +17,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"log"
 )
 
 func launchNode(cfgPath string) (*exec.Cmd, error) {
@@ -40,14 +44,42 @@ func unixTransport(socketPath string) *httpunix.Transport {
 	return t
 }
 
-func unixClient(socketPath string) *http.Client {
-	return &http.Client{
-		Transport: unixTransport(socketPath),
+func createNewClient(socketPath string, grpc bool) *Client {
+	if grpc{
+		return grpcClient(socketPath)
+	}
+	return unixClient(socketPath)
+}
+func unixClient(socketPath string) *Client {
+	return &Client{
+		httpClient: &http.Client{
+			Transport: unixTransport(socketPath),
+		},
 	}
 }
 
-func RunNode(socketPath string) error {
-	c := unixClient(socketPath)
+func grpcClient(socketPath string) *Client{
+	var conn *grpc.ClientConn
+	conn, err := grpc.Dial(fmt.Sprintf("passthrough:///unix://%s", socketPath), grpc.WithInsecure())
+	if err != nil {
+		log.Fatalf("did not connect: %s", err)
+	}
+	defer conn.Close()
+	var client Client
+	client.grpcClient = server.NewClientClient(conn)
+	return &client
+}
+
+func UpCheck(socketPath string, grpc bool) error {
+	if grpc {
+		_ = grpcClient(socketPath)
+		return RunNodeGrpc(socketPath)
+	}
+	return RunNodeUnix(socketPath)
+}
+
+func RunNodeUnix(socketPath string) error {
+	c := unixClient(socketPath).httpClient
 	res, err := c.Get("http+unix://c/upcheck")
 	if err != nil {
 		return err
@@ -58,8 +90,20 @@ func RunNode(socketPath string) error {
 	return errors.New("Constellation Node API did not respond to upcheck request")
 }
 
+func RunNodeGrpc(socketPath string) error {
+	c := grpcClient(socketPath).grpcClient
+	uc := server.UpCheckResponse{}
+	_, err := c.Upcheck(context.Background(), &uc)
+	if err != nil {
+		return errors.New("Constellation Node gRPC API did not respond to upcheck request")
+	}
+	return nil
+}
+
 type Client struct {
 	httpClient *http.Client
+	grpcClient server.ClientClient
+	usegrpc bool
 }
 
 func (c *Client) doJson(path string, apiReq interface{}) (*http.Response, error) {
@@ -78,6 +122,14 @@ func (c *Client) doJson(path string, apiReq interface{}) (*http.Response, error)
 		return nil, fmt.Errorf("Non-200 status code: %+v", res)
 	}
 	return res, err
+}
+
+func (c *Client) SendPayloadGrpc(pl []byte, b64From string, b64To []string) ([]byte, error){
+	resp, err := c.grpcClient.Send(context.Background(), &server.SendRequest{Payload: pl, From: b64From,To: b64To})
+	if err != nil {
+		return nil, fmt.Errorf("Send Payload failed: %v", err)
+	}
+	return resp.Key, nil
 }
 
 func (c *Client) SendPayload(pl []byte, b64From string, b64To []string) ([]byte, error) {
@@ -99,6 +151,14 @@ func (c *Client) SendPayload(pl []byte, b64From string, b64To []string) ([]byte,
 	return ioutil.ReadAll(base64.NewDecoder(base64.StdEncoding, res.Body))
 }
 
+func (c *Client) ReceivePayloadGrpc(data []byte) ([]byte, interface{}) {
+	resp, err := c.grpcClient.Receive(context.Background(), &server.ReceiveRequest{Key: data})
+	if err != nil {
+		return nil, fmt.Errorf("Receive Payload failed: %v", err)
+	}
+	return resp.Payload, nil
+}
+
 func (c *Client) ReceivePayload(key []byte) ([]byte, error) {
 	req, err := http.NewRequest("GET", "http+unix://c/receiveraw", nil)
 	if err != nil {
@@ -113,8 +173,6 @@ func (c *Client) ReceivePayload(key []byte) ([]byte, error) {
 	return ioutil.ReadAll(res.Body)
 }
 
-func NewClient(socketPath string) (*Client, error) {
-	return &Client{
-		httpClient: unixClient(socketPath),
-	}, nil
+func NewClient(socketPath string, grpc bool) (*Client, error) {
+	return createNewClient(socketPath, grpc), nil
 }

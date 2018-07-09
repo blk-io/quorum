@@ -21,6 +21,13 @@
 			"revisionTime": "2016-08-11T21:22:31Z"
 		},
 		{
+			"path": "github.com/blk-io/crux"
+		},
+		{
+			"path": "google.golang.org/grpc",
+			"revision": "05f48f4eaf0e05663b562bab533cdd472238ce29",
+		},
+		{
 			"checksumSHA1": "24EW3PGLGVSy/5joAOZdHzN/S2E=",
 			"path": "github.com/Azure/azure-storage-go",
 			"revision": "12ccaadb081cdd217702067d28da9a7ff4305239",

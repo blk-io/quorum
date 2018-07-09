@@ -14,7 +14,11 @@ type Constellation struct {
 }
 
 func (g *Constellation) Send(data []byte, from string, to []string) (out []byte, err error) {
-	out, err = g.node.SendPayload(data, from, to)
+	if g.node.usegrpc{
+		out, err = g.node.SendPayloadGrpc(data, from, to)
+	} else {
+		out, err = g.node.SendPayload(data, from, to)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -35,7 +39,12 @@ func (g *Constellation) Receive(data []byte) ([]byte, error) {
 	if found {
 		return x.([]byte), nil
 	}
-	pl, _ := g.node.ReceivePayload(data)
+	var pl []byte
+	if g.node.usegrpc{
+		pl, _ = g.node.ReceivePayloadGrpc(data)
+	} else {
+		pl, _ = g.node.ReceivePayload(data)
+	}
 	g.c.Set(dataStr, pl, cache.DefaultExpiration)
 	return pl, nil
 }
@@ -48,18 +57,20 @@ func New(path string) (*Constellation, error) {
 	// We accept either the socket or a configuration file that points to
 	// a socket.
 	isSocket := info.Mode() & os.ModeSocket != 0
+	var cfg *Config
 	if !isSocket {
-		cfg, err := LoadConfig(path)
+		cfg, err = LoadConfig(path)
 		if err != nil {
 			return nil, err
 		}
 		path = filepath.Join(cfg.WorkDir, cfg.Socket)
 	}
-	err = RunNode(path)
+
+	err = UpCheck(path, cfg.grpc)
 	if err != nil {
 		return nil, err
 	}
-	n, err := NewClient(path)
+	n, err := NewClient(path, cfg.grpc)
 	if err != nil {
 		return nil, err
 	}
